@@ -1,16 +1,5 @@
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import FileResponse
-import os
-from random import randint
-import uuid
-from paddleocr import PaddleOCR
-import regex as re
-from PIL import Image
-import os
-import cv2
-import io
 import requests
-from io import BytesIO
 import joblib
 import pandas as pd
 import nltk
@@ -18,107 +7,47 @@ from nltk.corpus import stopwords
 from fastapi.middleware.cors import CORSMiddleware
 from nltk.tokenize import word_tokenize
 import sklearn
+from gensim.parsing.preprocessing import remove_stopwords
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 IMAGEDIR = "images/"
 
-class ChatOcr:
-    def __init__(self, lang = "en"):
-        self.model = PaddleOCR(use_angle_cls=True, lang=lang)
-    
-    def ocr(self, img_bytes):
-        img = Image.open(BytesIO(img_bytes))
-        width, height = img.size
-
-        result = self.model.ocr(img_bytes, cls=True)[0]
-
-        filtered_result = self._filter_ocr_ouputs(result)
-
-        classified_result = self._classify(filtered_result, width, height)
-
-        return classified_result
-
-    def _is_date(self, text):
-        text = text.replace(" ", "")
-
-        pattern = r"^([0-9]{1,2}\-[0-9]{1,2}\-[0-9]{2})?.{,2}[0-9]{1,2}\:[0-9]{1,2}[AP]M$"
-        match = re.search(pattern, text)
-        
-        if match:
-            return True
-        else:
-            return False
-
-    def _classify(self, filtered_result, width, height):
 
 
-        classified_result = []
+COMPUTER_VISION_KEY = os.getenv("COMPUTER_VISION_KEY")
+COMPUTER_VISION_ENDPOINT = os.getenv("COMPUTER_VISION_ENDPOINT")
 
-        for line in filtered_result:
-            center_x = (line["bbox"][0][0] + line["bbox"][1][0]) / 2
-            mean_y = (line["bbox"][0][1] + line["bbox"][1][1]) / 2
+def perform_ocr(image):
+    subscription_key = COMPUTER_VISION_KEY
+    endpoint = COMPUTER_VISION_ENDPOINT
+    ocr_url = endpoint + "vision/v3.1/ocr"
 
-            if center_x / width < 0.5:
-                line["sent_by"] = "A"
-            else:
-                line["sent_by"] = "B"
+    image_data = image
 
-            line["mean_y"] = mean_y
-            classified_result.append(line)
-        
-        mixed_classified_result = []
-        discarded_index = []
+    params = {'language': 'unk', 'detectOrientation': 'true'}
+    headers = {'Ocp-Apim-Subscription-Key': subscription_key, 'Content-Type': 'application/octet-stream'}
 
-        for i in range(len(classified_result) - 1):
-            if i in discarded_index:
-                continue
+    response = requests.post(ocr_url, headers=headers, params=params, data=image_data)
 
-            if abs(classified_result[i]["mean_y"] - classified_result[i + 1]["mean_y"])/height < 0.05:
-                mixed_classified_result.append({
-                    "text": classified_result[i]["text"] + classified_result[i + 1]["text"],
-                    "sent_by": classified_result[i]["sent_by"],
-                })
-                discarded_index.append(i + 1)
-            
-            else:
-                mixed_classified_result.append({
-                    "text": classified_result[i]["text"],
-                    "sent_by": classified_result[i]["sent_by"],
-                })    
-                
-        
-        if len(classified_result) - 1 not in discarded_index:
-            mixed_classified_result.append({
-                "text": classified_result[-1]["text"],
-                "sent_by": classified_result[-1]["sent_by"],
-            })
-                
-        
-        return mixed_classified_result
+    if response.status_code == 200:
+        analysis = response.json()
+        return cleaned(analysis)
+    else:
+        return ("OCR analysis failed. Please check your credentials and try again.")
 
 
-    def _filter_ocr_ouputs(self, ocr_outputs):
-
-        result = []
-
-        for line in ocr_outputs:
-            text = line[-1][0]
-            conf = line[-1][1]
-
-            if self._is_date(text):
-                continue
-
-            result.append({
-                "text": text,
-                "conf": conf,
-                "bbox": line[0]
-            })
-
-        return result
-
+def cleaned(original_json):
+    text = ""
+    for line in original_json["regions"][0]["lines"]:
+        for x in line["words"]:
+            text = text + x["text"] + " "
+    return text
 
 def check_toxicity(text):
     model_filename = 'models/logistic_regression_model.joblib'
     loaded_model = joblib.load(model_filename)
-    nltk.download("stopwords")
     vectorizer_filename = 'models/tfidf_vectorizer.pkl'
     loaded_vectorizer = joblib.load(vectorizer_filename)
 
@@ -137,16 +66,8 @@ def check_toxicity(text):
     return prediction_dictionary[str(prediction[0])]
 
 def stopword_removal(text):
-    stop_words = set(stopwords.words('english'))
-  
-    word_tokens = word_tokenize(text)
-    filtered_sentence = [w for w in word_tokens if not w.lower() in stop_words]
-    filtered_sentence = []
-    
-    for w in word_tokens:
-        if w not in stop_words:
-            filtered_sentence.append(w)
-    return " ".join(filtered_sentence)
+    result = remove_stopwords(text)
+    return result
 
 
 app = FastAPI()
@@ -165,18 +86,8 @@ app.add_middleware(
 @app.post("/upload")
 async def create_upload_file(file: UploadFile = File(...)):
     file_name = file.filename
-    ocr = ChatOcr()
     img = await file.read()
-    result = ocr.ocr(img)
-    distribution = {
-        "A":[],
-        "B":[]
-    }
-    for line in result:
-        if line["sent_by"]=="A":
-            distribution["A"].append(line["text"])
-        else:
-            distribution["B"].append(line["text"])
-    result = check_toxicity(" ".join(distribution["A"]))
+    result = perform_ocr(img)
+    print(result)
+    result = check_toxicity(result)
     return {"response":result}
-
