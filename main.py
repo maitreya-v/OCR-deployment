@@ -18,7 +18,6 @@ from nltk.corpus import stopwords
 from fastapi.middleware.cors import CORSMiddleware
 from nltk.tokenize import word_tokenize
 import sklearn
-from ngrok import get_app
 IMAGEDIR = "images/"
 
 class ChatOcr:
@@ -83,7 +82,7 @@ class ChatOcr:
                 mixed_classified_result.append({
                     "text": classified_result[i]["text"],
                     "sent_by": classified_result[i]["sent_by"],
-                })
+                })    
                 
         
         if len(classified_result) - 1 not in discarded_index:
@@ -150,9 +149,6 @@ def stopword_removal(text):
     return " ".join(filtered_sentence)
 
 
-    return app
-
-
 app = FastAPI()
  
 app.add_middleware(
@@ -182,5 +178,5 @@ async def create_upload_file(file: UploadFile = File(...)):
         else:
             distribution["B"].append(line["text"])
     result = check_toxicity(" ".join(distribution["A"]))
-    return {"response":result,"messages":distribution}
+    return {"response":result}
 
